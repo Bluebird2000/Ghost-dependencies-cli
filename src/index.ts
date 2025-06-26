@@ -99,8 +99,43 @@ const estimatePackageSize = (pkg: string): number => {
     });
     const json = JSON.parse(result);
     return json[0].size / 1024;
-  } catch (err) {
+  } catch {
     return 0;
+  }
+};
+
+const auditDependencies = (): Record<
+  string,
+  { vulnerable: boolean; suggestions: string[] }
+> => {
+  try {
+    const auditRaw = execSync("npm audit --json", { encoding: "utf-8" });
+    const auditData = JSON.parse(auditRaw);
+    const findings: Record<
+      string,
+      { vulnerable: boolean; suggestions: string[] }
+    > = {};
+
+    if (auditData.advisories) {
+      for (const key in auditData.advisories) {
+        const advisory = auditData.advisories[key];
+        const name = advisory.module_name;
+        if (!findings[name]) {
+          findings[name] = {
+            vulnerable: true,
+            suggestions: [],
+          };
+        }
+        if (advisory.recommendation) {
+          findings[name].suggestions.push(advisory.recommendation);
+        }
+      }
+    }
+
+    return findings;
+  } catch (err) {
+    console.warn("Audit failed or no vulnerabilities found.");
+    return {};
   }
 };
 
@@ -118,6 +153,10 @@ const main = async () => {
       type: "boolean",
       description: "Suggest lighter alternatives",
     })
+    .option("audit", {
+      type: "boolean",
+      description: "Run vulnerability audit using npm audit",
+    })
     .parse();
 
   const pkg = getPackageJson();
@@ -130,11 +169,16 @@ const main = async () => {
   );
 
   const usedDeps = scanProjectForDeps();
+  const auditMap = argv.audit ? auditDependencies() : {};
 
   for (const dep of deps) {
     dep.used = usedDeps.has(dep.name);
     if (argv.analyze) {
       dep.size = estimatePackageSize(dep.name);
+    }
+    if (argv.audit && auditMap[dep.name]) {
+      dep.vulnerable = auditMap[dep.name].vulnerable;
+      dep.suggestions = auditMap[dep.name].suggestions;
     }
   }
 
@@ -154,7 +198,10 @@ const main = async () => {
       deps.map((d) => ({
         Name: d.name,
         Used: d.used ? "✓" : "✗",
-        Size: d.size ? `${d.size.toFixed(1)} KB` : "-",
+        Size: argv.analyze && d.size ? `${d.size.toFixed(1)} KB` : "-",
+        Vulnerable: argv.audit ? (d.vulnerable ? "⚠️" : "✓") : "-",
+        Suggestions:
+          argv.audit && d.suggestions ? d.suggestions.join(" | ") : "-",
       }))
     );
   }

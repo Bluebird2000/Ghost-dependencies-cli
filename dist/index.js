@@ -99,8 +99,34 @@ var estimatePackageSize = (pkg) => {
     });
     const json = JSON.parse(result);
     return json[0].size / 1024;
-  } catch (err) {
+  } catch (e) {
     return 0;
+  }
+};
+var auditDependencies = () => {
+  try {
+    const auditRaw = execSync("npm audit --json", { encoding: "utf-8" });
+    const auditData = JSON.parse(auditRaw);
+    const findings = {};
+    if (auditData.advisories) {
+      for (const key in auditData.advisories) {
+        const advisory = auditData.advisories[key];
+        const name = advisory.module_name;
+        if (!findings[name]) {
+          findings[name] = {
+            vulnerable: true,
+            suggestions: []
+          };
+        }
+        if (advisory.recommendation) {
+          findings[name].suggestions.push(advisory.recommendation);
+        }
+      }
+    }
+    return findings;
+  } catch (err) {
+    console.warn("Audit failed or no vulnerabilities found.");
+    return {};
   }
 };
 var main = () => __async(null, null, function* () {
@@ -113,6 +139,9 @@ var main = () => __async(null, null, function* () {
   }).option("suggest", {
     type: "boolean",
     description: "Suggest lighter alternatives"
+  }).option("audit", {
+    type: "boolean",
+    description: "Run vulnerability audit using npm audit"
   }).parse();
   const pkg = getPackageJson();
   const deps = Object.entries(pkg.dependencies || {}).map(
@@ -123,10 +152,15 @@ var main = () => __async(null, null, function* () {
     })
   );
   const usedDeps = scanProjectForDeps();
+  const auditMap = argv.audit ? auditDependencies() : {};
   for (const dep of deps) {
     dep.used = usedDeps.has(dep.name);
     if (argv.analyze) {
       dep.size = estimatePackageSize(dep.name);
+    }
+    if (argv.audit && auditMap[dep.name]) {
+      dep.vulnerable = auditMap[dep.name].vulnerable;
+      dep.suggestions = auditMap[dep.name].suggestions;
     }
   }
   if (argv.clean) {
@@ -145,7 +179,9 @@ var main = () => __async(null, null, function* () {
       deps.map((d) => ({
         Name: d.name,
         Used: d.used ? "\u2713" : "\u2717",
-        Size: d.size ? `${d.size.toFixed(1)} KB` : "-"
+        Size: argv.analyze && d.size ? `${d.size.toFixed(1)} KB` : "-",
+        Vulnerable: argv.audit ? d.vulnerable ? "\u26A0\uFE0F" : "\u2713" : "-",
+        Suggestions: argv.audit && d.suggestions ? d.suggestions.join(" | ") : "-"
       }))
     );
   }
